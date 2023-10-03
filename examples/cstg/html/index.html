@@ -5,78 +5,97 @@
     <title>UID2 Publisher Standard Integration Example</title>
     <link rel="stylesheet" type="text/css" href="/stylesheets/app.css" />
     <link rel="shortcut icon" href="/images/favicon.png" />
-    <script defer src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-    <script defer src="{{ UID2_JS_SDK_URL }}"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="/js/prebid8.17.0.js"></script>
+    <script src="{{ UID2_JS_SDK_URL }}"></script>
     <script>
-      const clientSideIdentityOptions = {
+      const clientSideConfig = {
         subscriptionId: "{{ SUBSCRIPTION_ID }}",
         serverPublicKey: "{{ SERVER_PUBLIC_KEY }}",
       };
 
-      let callbackCounter = 0;
+      // Example of a base-64 encoded SHA-256 hash of an email address.
+      const emailHash = "tMmiiTI7IaAcPpQPFQ65uMVCWH8av9jw4cwf/F5HVRQ=";
 
-      function updateGuiElements(state) {
-        $("#targeted_advertising_ready").text(
-          __uid2.getAdvertisingToken() ? "yes" : "no"
-        );
-        $("#advertising_token").text(String(__uid2.getAdvertisingToken()));
-        $("#login_required").text(
-          __uid2.isLoginRequired() || __uid2.isLoginRequired() === undefined
-            ? "yes"
-            : "no"
-        );
-        $("#update_counter").text(callbackCounter);
-        $("#identity_state").text(String(JSON.stringify(state, null, 2)));
-
-        if (
-          __uid2.isLoginRequired() ||
-          __uid2.isLoginRequired() === undefined
-        ) {
-          $("#login_form").show();
-          $("#logout_form").hide();
-        } else {
-          $("#login_form").hide();
-          $("#logout_form").show();
-        }
-      }
-
-      function onUid2IdentityUpdated(eventType, payload) {
-        if (
-          payload?.identity &&
-          (eventType === "InitCompleted" || eventType === "IdentityUpdated")
-        ) {
-          ++callbackCounter;
-        }
-        updateGuiElements(payload);
-      }
-
-      function onDocumentReady() {
-        $("#logout").click(() => {
-          __uid2.disconnect();
-          updateGuiElements(undefined);
-        });
-
-        $("#login").click(async () => {
-          const email = $("#email").val();
-
-          try {
-            await __uid2.setIdentityFromEmail(email, clientSideIdentityOptions);
-          } catch (e) {
-            console.error("setIdentityFromEmail failed", e);
-          }
+      // Example function to pass UID2 advertising token into Prebid.js
+      function mergePbjsConfig(advertisingToken) {
+        window.pbjs = window.pbjs || {};
+        window.pbjs.que = window.pbjs.que || [];
+        window.pbjs.que.push(function () {
+          pbjs.mergeConfig({
+            userSync: {
+              userIds: [
+                {
+                  name: "uid2",
+                  value: {
+                    uid2: {
+                      id: advertisingToken,
+                    },
+                  },
+                },
+              ],
+            },
+          });
+          pbjs.refreshUserIds({ submoduleNames: ["uid2"] });
         });
       }
 
+      // When the UID2 SDK is executed, it will look for these callbacks and invoke them.
       window.__uid2 = window.__uid2 || {};
       window.__uid2.callbacks = window.__uid2.callbacks || [];
+      window.__uid2.callbacks.push(async (eventType, payload) => {
+        console.log("eventType", eventType, "payload", payload);
 
-      window.__uid2.callbacks.push(onUid2IdentityUpdated);
-      window.__uid2.callbacks.push((eventType, payload) => {
-        if (eventType === "SdkLoaded") {
-          window.__uid2.init({
-            baseUrl: "{{ UID2_BASE_URL }}",
-          });
-          $(document).ready(onDocumentReady);
+        switch (eventType) {
+          case "SdkLoaded":
+            // The SdkLoaded event occurs just once.
+            __uid2.init({
+              // URL depends on whether you are targeting the integration
+              // environment, or the production environment.
+              baseUrl: "{{ UID2_BASE_URL }}",
+            });
+            break;
+
+          case "InitCompleted":
+            // The InitCompleted event occurs just once.
+            //
+            // If there was a valid UID2 token in the cookie, it will be in payload.identity.
+            if (payload.identity) {
+              // Pass the UID2 Advertising Token to Prebid.js.
+              //
+              // payload will look like this:
+              // {
+              //   "identity": {
+              //     "advertising_token": "A4A...MqA",
+              //     "refresh_token": "A3A...pdg==",
+              //     "identity_expires": 1692257038260,
+              //     "refresh_expires": 1692339838260,
+              //     "refresh_from": 1692254338260
+              //     "refresh_response_key": "z0v...zL0="
+              //   }
+              // }
+              mergePbjsConfig(payload.identity.advertising_token);
+            } else {
+              // Call setIdentityFromEmailHash to generate a new UID2 token from
+              // the email hash.
+              // Add any retry logic around this call as required.
+              await __uid2.setIdentityFromEmailHash(
+                emailHash,
+                clientSideConfig
+              );
+            }
+            break;
+
+          case "IdentityUpdated":
+            // The IdentityUpdated event will happen when:
+            //
+            // - A UID2 token was generated from setIdentityFromEmailHash, or
+            // - The UID2 token was refreshed.
+            //
+            // Pass the UID2 Advertising Token to Prebid.js.
+            // See comment above for an example of how payload will look.
+            mergePbjsConfig(payload.identity.advertising_token);
+            break;
         }
       });
     </script>
